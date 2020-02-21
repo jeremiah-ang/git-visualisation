@@ -3,17 +3,6 @@ import ReactDOM from "react-dom";
 import styled, {keyframes, ThemeProvider} from 'styled-components';
 import shortid from 'shortid';
 
-const RED = '#F96654';
-const YELLOW = '#FABC55';
-const BLUE = '#4088C7';
-const GREEN = '#34B362';
-const DARK_GREEN = '#136632';
-const DARK_RED = '#C75344';
-const DARK_YELLOW = '#C79544';
-const DARK_BLUE = '#2F6594';
-const CIRCLE_COLORS = [BLUE, GREEN, YELLOW, RED]; 
-const CIRCLE_BORDERS = [DARK_BLUE, DARK_GREEN, DARK_YELLOW, DARK_RED]; 
-
 const theme = {
   red: '#F96654',
   yellow: '#FABC55',
@@ -25,7 +14,7 @@ const theme = {
   darkGreen: '#136632',
   grey: '#EEE',
 
-  historyHeight: 50,
+  historyHeight: 55,
   historyMarginBottom: 15,
   historyCircleWidth: 20,
   historyCircleBorderLeft: 3,
@@ -68,7 +57,7 @@ const Copy = styled.div`
 const History = styled.div`
   margin-bottom: ${props => (props.theme.historyMarginBottom) + 'px'};
   height: ${props => (props.theme.historyHeight) + 'px'};
-  margin-top: ${props => props.rowOffset + 'px' || '0px'};
+  margin-top: ${props => (props.rowOffset > 0) ? (props.rowOffset * dimensions.historyMarginY) + props.theme.historyMarginBottom + 'px' : '0px'};
 `
 
 const NiceButton = styled.div`
@@ -76,7 +65,8 @@ const NiceButton = styled.div`
   font-family: sans-serif;
   color: #7986cb;
   border-radius: 100px;
-  padding: 5px 10px;
+  padding: 3px 10px;
+  margin-bottom: 2px;
   cursor: pointer;
   text-align: center;
   text-transform: uppercase;
@@ -138,8 +128,8 @@ const HistoryCircle = styled.div`
   height: 20px;
   border-radius: 50%;
   margin-top: ${props => props.theme.historyCircleMarginTop + 'px'};
-  background-color: ${props => (props.isCheckout) ? props.theme.grey : props.theme.circleColors[props.columnNth % CIRCLE_COLORS.length]};
-  border: ${props => props.isCheckout ? props.theme.circleColors[props.columnNth % CIRCLE_COLORS.length] + ' solid 3px' : ''};
+  background-color: ${props => (props.isCheckout) ? props.theme.grey : props.theme.circleColors[props.columnNth % props.theme.circleColors.length]};
+  border: ${props => props.isCheckout ? props.theme.circleColors[props.columnNth % props.theme.circleColors.length] + ' solid 3px' : ''};
   margin-left: ${props => props.isCheckout ? '' : props.theme.historyCircleBorderLeft + 'px'};
   animation: ${fallDownAnimation} cubic-bezier(0.770, 0.000, 0.175, 1.000) 1s;
   animation-fill-mode: forwards;
@@ -195,7 +185,7 @@ class Point {
 
   curveto(point2) {
     const [p1, p2] = (this.y < point2.y) ? [this, point2] : [point2, this];
-    const curve = dimensions.curvePower;
+    const curve = ((this.x < point2.x) ? 1 : -1) * dimensions.curvePower;
     return [
       p1,
       new Point(p1.x + curve, p1.y),
@@ -213,12 +203,12 @@ const NodeStateEnum = {
 }
 
 class Node {
-  constructor(nodeId, parentNodeIds, columnId, pos, rowOffset=0, state=NodeStateEnum.Created) {
+  constructor(nodeId, parentNodeIds, branchId, row, mergedToBranch, state=NodeStateEnum.Created) {
     this.nodeId = nodeId;
     this.parentNodeIds = parentNodeIds;
-    this.columnId = columnId; 
-    this.pos = pos;
-    this.rowOffset = rowOffset;
+    this.branchId = branchId; 
+    this.row = row;
+    this.mergedToBranch = mergedToBranch || new Set();
     this.state = state;
   }
 
@@ -228,7 +218,7 @@ class Node {
       return this;
     }
     console.log(`[${this.nodeId}] commit, new state = ${NodeStateEnum.OpenToChanges}`);
-    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.OpenToChanges);
+    return new Node(this.nodeId, this.parentNodeIds, this.branchId, this.row, this.mergedToBranch, NodeStateEnum.OpenToChanges);
   }
 
   checkout() {
@@ -237,7 +227,7 @@ class Node {
       return this;
     }
     console.log(`[${this.nodeId}] checkout, new state = ${NodeStateEnum.MakingChanges}`);
-    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.MakingChanges);
+    return new Node(this.nodeId, this.parentNodeIds, this.branchId, this.row, this.mergedToBranch, NodeStateEnum.MakingChanges);
   }
 
   othersCheckout() {
@@ -246,7 +236,7 @@ class Node {
       return this;
     }
     console.log(`[${this.nodeId}] Others checkedout, new state = ${NodeStateEnum.OpenToChanges}`);
-    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.OpenToChanges);
+    return new Node(this.nodeId, this.parentNodeIds, this.branchId, this.row, this.mergedToBranch, NodeStateEnum.OpenToChanges);
   }
 
   childCommit() {
@@ -255,7 +245,23 @@ class Node {
       return this;
     }
     console.log(`[${this.nodeId}] Child Commit, new state = ${NodeStateEnum.MadeChanges}`);
-    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.MadeChanges);
+    return new Node(this.nodeId, this.parentNodeIds, this.branchId, this.row, this.mergedToBranch, NodeStateEnum.MadeChanges);
+  }
+
+  merge(mergeFromNode) {
+    if (this.state !== NodeStateEnum.Created) {
+      console.log(`[${this.nodeId}] Cannot merge! State error: ${this.state}`);
+    }
+    console.log(`[${this.nodeId}] merge, new state = ${NodeStateEnum.MadeChanges}`);
+    const row = Math.max(mergeFromNode.row, this.row - 1) + 1;
+    return new Node(this.nodeId, {...this.parentNodeIds, [mergeFromNode.branchId]: mergeFromNode.nodeId}, this.branchId, row, this.mergedToBranch, NodeStateEnum.MakingChanges);
+  }
+
+  mergeTo(mergeToNode) {
+    const mergeToNodeBranchId = mergeToNode.branchId;
+    const mergedToBranch = new Set(this.mergedToBranch)
+    mergedToBranch.add(mergeToNodeBranchId);
+    return new Node(this.nodeId, this.parentNodeIds, this.branchId, this.row, mergedToBranch, this.state);
   }
 }
 
@@ -268,29 +274,29 @@ class Circle {
   }
 }
 
-class Column {
-  constructor(columnId, nodeIds, rowOffset, pos) {
-    this.columnId = columnId;
+class Branch {
+  constructor(branchId, nodeIds, rowOffset, column) {
+    this.branchId = branchId;
     this.nodeIds = nodeIds || [];
     this.rowOffset = rowOffset;
-    this.pos = pos;
+    this.column = column;
   }
 
   addNode(nodeId) {
-    return new Column(this.columnId, [...this.nodeIds, nodeId], this.rowOffset, this.pos);
+    return new Branch(this.branchId, [...this.nodeIds, nodeId], this.rowOffset, this.column);
   }
 
   pop() {
     const newNodeIds = [...this.nodeIds];
     newNodeIds.pop();
-    return new Column(this.columnId, newNodeIds, this.rowOffset, this.pos);
+    return new Branch(this.branchId, newNodeIds, this.rowOffset, this.column);
   }
 }
 
 class GitVisualisation extends Component {
   state = {
     nodeIds: [],
-    columnIds: [], 
+    branchIds: [], 
   }
 
   circles = {};
@@ -298,16 +304,16 @@ class GitVisualisation extends Component {
   constructor(props) {
     super(props);
 
-    const columnId = shortid.generate();
+    const branchId = shortid.generate();
     const rootNodeId = shortid.generate();
     const checkoutNodeId = shortid.generate();
 
-    const column = new Column(columnId, [rootNodeId, checkoutNodeId], 0, 0);
-    const rootNode = new Node(rootNodeId, {}, columnId, 0).commit().checkout();
-    const checkoutNode = new Node(checkoutNodeId, {[columnId]: rootNodeId}, columnId, 1);
+    const branch = new Branch(branchId, [rootNodeId, checkoutNodeId], 0, 0);
+    const rootNode = new Node(rootNodeId, {}, branchId, 0).commit().checkout();
+    const checkoutNode = new Node(checkoutNodeId, {[branchId]: rootNodeId}, branchId, 1);
 
-    this.state.columnIds.push(columnId);
-    this.state[columnId] = column;
+    this.state.branchIds.push(branchId);
+    this.state[branchId] = branch;
     this.state.nodeIds.push(rootNodeId);
     this.state[rootNodeId] = rootNode;
     this.state.nodeIds.push(checkoutNodeId);
@@ -315,88 +321,95 @@ class GitVisualisation extends Component {
     this.state.checkout = checkoutNodeId;
   }
   
-  commitNode(parentNodeId, columnId) {
+  commitNode(parentNodeId, branchId) {
     this.setState((state, _) => { 
       const nodeId = shortid.generate();
-      const parentPos = this.state[parentNodeId].pos;
-      const grandParentNodeId = this.state[parentNodeId].parentNodeIds[columnId];
-      const node = new Node(nodeId, {[columnId]: parentNodeId}, columnId, parentPos + 1);
+      const parentNodeRow = this.state[parentNodeId].row;
+      const grandParentNodeId = this.state[parentNodeId].parentNodeIds[branchId];
+      const node = new Node(nodeId, {[branchId]: parentNodeId}, branchId, parentNodeRow + 1);
 
       return this.updateCheckout(state, {
         [grandParentNodeId]: state[grandParentNodeId].childCommit(),
         [parentNodeId]: state[parentNodeId].commit().checkout(),
         [nodeId]: node,
-        [columnId]: state[columnId].addNode(nodeId),
+        [branchId]: state[branchId].addNode(nodeId),
         nodeIds: [...state.nodeIds, nodeId],
         checkout: nodeId,
       });
     });
   }
   branchNode(parentNodeId) {
-    const parentPos = this.state[parentNodeId].pos;
+    const parentNode = this.state[parentNodeId];
+    const parentNodeRow = parentNode.row;
 
-    const columnId = shortid.generate();
+    const branchId = shortid.generate();
     const branchNodeId = shortid.generate();
     const nodeId = shortid.generate();
 
-    const column = new Column(columnId, [branchNodeId, nodeId], parentPos + 1, this.state.columnIds.length,);
-    const branchNode = new Node(branchNodeId, {[columnId]: parentNodeId}, columnId, parentPos + 1).commit().checkout();
-    const node = new Node(nodeId, {[columnId]: branchNodeId}, columnId, parentPos + 2);
+    const branch = new Branch(branchId, [branchNodeId, nodeId], parentNodeRow + 1, this.state.branchIds.length,);
+    const branchNode = new Node(branchNodeId, {[branchId]: parentNodeId}, branchId, parentNodeRow + 1).commit().checkout();
+    const node = new Node(nodeId, {[branchId]: branchNodeId}, branchId, parentNodeRow + 2);
 
     this.setState((state, _) => this.updateCheckout(state, {
-      [columnId]: column,
+      [parentNodeId]: parentNode.mergeTo(branchNode),
+      [branchId]: branch,
       [branchNodeId]: branchNode,
       [nodeId]: node,
-      columnIds: [...state.columnIds, columnId],
+      branchIds: [...state.branchIds, branchId],
       nodeIds: [...state.nodeIds, branchNodeId, nodeId],
       checkout: nodeId,
-      [state.checkout]: state[state.checkout].othersCheckout(),
     }));
   }
   setCheckout(parentNodeId) {
     this.setState((state, _) => {
       const newNodeId = shortid.generate();
       const parentNode = state[parentNodeId];
-      const column = state[parentNode.columnId].addNode(newNodeId);
-      const newNode = new Node(newNodeId, {[column.columnId]: parentNodeId}, column.columnId, parentNode.pos + 1);
+      const branch = state[parentNode.branchId].addNode(newNodeId);
+      const newNode = new Node(newNodeId, {[branch.branchId]: parentNodeId}, branch.branchId, parentNode.row + 1);
 
       return this.updateCheckout(state, {
         checkout: newNodeId,
         nodeIds: [...state.nodeIds, newNodeId],
         [newNodeId]: newNode,
-        [column.columnId]: column.addNode(newNodeId),
+        [branch.branchId]: branch.addNode(newNodeId),
         [parentNodeId]: parentNode.checkout(),
       })
     });
   }
   updateCheckout(state, updateDict) {    
     const currentCheckoutNode = state[state.checkout];
-    const currentCheckoutNodeParent = state[currentCheckoutNode.parentNodeIds[currentCheckoutNode.columnId]];
-    const currentCheckoutNodeColumn = state[currentCheckoutNode.columnId];
+    let currentCheckoutNodeParent = state[currentCheckoutNode.parentNodeIds[currentCheckoutNode.branchId]];
+    if (currentCheckoutNodeParent.nodeId in updateDict) {
+      currentCheckoutNodeParent = updateDict[currentCheckoutNodeParent.nodeId];
+    }
+    const currentCheckoutNodeBranch = state[currentCheckoutNode.branchId];
 
     if (!(state.checkout in updateDict) || updateDict[state.checkout].state === NodeStateEnum.Created) {
       updateDict[currentCheckoutNodeParent.nodeId] = currentCheckoutNodeParent.othersCheckout();
       updateDict[currentCheckoutNode.nodeId] = undefined;
     }
-    updateDict[currentCheckoutNodeColumn.columnId] = currentCheckoutNodeColumn.pop();
+    updateDict[currentCheckoutNodeBranch.branchId] = currentCheckoutNodeBranch.pop();
 
     return updateDict;
   } 
   mergeNode(mergeFromNodeId, mergeToNodeId) {
-    const parentNodeIds = [mergeFromNodeId, mergeToNodeId]
-    const nodeId = shortid.generate();
-    const column = this.state[mergeToNodeId];
-    const columnId = column.columnId;
-    const mergeToNodePos = this.state[mergeToNodeId].pos;
-    const pos = Math.max(this.state[mergeFromNodeId].pos, mergeToNodePos) + 1;
-    const rowOffset = pos - mergeToNodePos - 1;
-    const node = new Node(nodeId, parentNodeIds, columnId, pos, rowOffset);
-    this.setState((state, _) => ({
-      [nodeId]: node,
-      nodeIds: [...state.nodeIds, nodeId],
-      [columnId]: state[columnId].addNode(nodeId),
-      checkout: nodeId,
-    }))
+    this.setState((state, _) => {       
+      const mergeFromNode = state[mergeFromNodeId];
+      const mergeToNode = state[mergeToNodeId].merge(mergeFromNode);
+      const mergeToBranch = state[mergeToNode.branchId];
+      const parentNodeIds = {[mergeToBranch.branchId]: mergeToNodeId}
+      const nodeId = shortid.generate();
+      const branchId = mergeToBranch.branchId;
+      const node = new Node(nodeId, parentNodeIds, branchId, mergeToNode.row + 1);
+      return this.updateCheckout(state, {
+        [mergeToNodeId]: mergeToNode,
+        [mergeFromNodeId]: mergeFromNode.mergeTo(mergeToNode),
+        [nodeId]: node,
+        nodeIds: [...state.nodeIds, nodeId],
+        [branchId]: state[branchId].addNode(nodeId),
+        checkout: nodeId,
+      });
+    });
   }
   addNodeCircleDom(nodeId, dom, row, column) {
     this.circles[nodeId] = new Circle(nodeId, dom, row, column);
@@ -420,37 +433,42 @@ class GitVisualisation extends Component {
   render() {
     const $this = this;
     const state = this.state;
-    const copyColumnHistoryNodes = {};
+    const copyBranchHistoryNodes = {};
+    const checkoutBranchId = state[state.checkout].branchId;
     state.nodeIds.forEach(nodeId => {
       if (!state[nodeId]) return;
-      const columnId = state[nodeId].columnId;
-      const column = this.state[columnId];
-      const node = this.state[nodeId];
+      const node = state[nodeId];
+      const branchId = node.branchId;
+      const branch = state[branchId];
+      const parentNode = state[node.parentNodeIds[branchId]];
+      const rowOffset = (parentNode) ? node.row - parentNode.row - 1 : 0;
       const historyNode = <HistoryNode 
         key={nodeId}
         nodeId={nodeId}
         onBranchNode={function() { $this.branchNode(nodeId); }}
-        onCommitNode={function() { $this.commitNode(nodeId, columnId); }}
-        onCheckout={function () { $this.setCheckout(nodeId); }}
-        historyCircleRef={function (dom) { $this.addNodeCircleDom(nodeId, dom, node.pos, column.pos); }}
+        onCommitNode={function() { $this.commitNode(nodeId, branchId); }}
+        onCheckout={function() { $this.setCheckout(nodeId); }}
+        onMerge={function() { $this.mergeNode(nodeId, state.checkout); }}
+        historyCircleRef={function (dom) { $this.addNodeCircleDom(nodeId, dom, node.row, branch.column); }}
 
         isCheckout={state.checkout === nodeId}
         isBranchable={true}
         nodeState={node.state}
+        isMergable={!(node.mergedToBranch.has(checkoutBranchId)) && checkoutBranchId !== node.branchId}
 
-        columnNth={column.pos}
-        rowOffset={node.rowOffset}
+        columnNth={branch.column}
+        rowOffset={rowOffset}
       ></HistoryNode>;
-      if (!(columnId in copyColumnHistoryNodes)) {
-        copyColumnHistoryNodes[columnId] = [];
+      if (!(branchId in copyBranchHistoryNodes)) {
+        copyBranchHistoryNodes[branchId] = [];
       }
-      copyColumnHistoryNodes[columnId].push(historyNode);
+      copyBranchHistoryNodes[branchId].push(historyNode);
     });
-    const columns = this.state.columnIds.map(columnId => this.state[columnId]);
+    const branches = this.state.branchIds.map(branchId => this.state[branchId]);
 
     return <Git>
       <ConnectionsContainer ref={this.connectionsContainerRef.bind(this)}></ConnectionsContainer>
-      <GitTable copyColumnHistoryNodes={copyColumnHistoryNodes} columns={columns}></GitTable>
+      <GitTable copyBranchHistoryNodes={copyBranchHistoryNodes} branches={branches}></GitTable>
     </Git>
   }
 
@@ -505,13 +523,13 @@ class GitConnections extends Component {
 
 class GitTable extends Component {
   render() {
-    const copyColumnHistoryNodes = this.props.copyColumnHistoryNodes;
-    const columns = this.props.columns;
-    return columns.map((column, index) => {
-      const columnId = column.columnId;
-      const rowOffset = column.rowOffset;
-      return <Copy key={columnId} rowOffset={rowOffset} nth={index}>
-        {copyColumnHistoryNodes[columnId]}
+    const copyBranchHistoryNodes = this.props.copyBranchHistoryNodes;
+    const branches = this.props.branches;
+    return branches.map((branches, index) => {
+      const branchId = branches.branchId;
+      const rowOffset = branches.rowOffset;
+      return <Copy key={branchId} rowOffset={rowOffset} nth={index}>
+        {copyBranchHistoryNodes[branchId]}
       </Copy>
     });
   }
@@ -528,6 +546,7 @@ class HistoryNode extends Component {
     this.onBranch = this.onBranch.bind(this);
     this.onCommit = this.onCommit.bind(this);
     this.onCheckout = this.onCheckout.bind(this);
+    this.onMerge = this.onMerge.bind(this);
     this.onAdd = this.onAdd.bind(this);
     this.onDelete = this.onDelete.bind(this);
   }
@@ -542,6 +561,10 @@ class HistoryNode extends Component {
 
   onCheckout() {
     this.props.onCheckout();
+  }
+
+  onMerge() {
+    this.props.onMerge();
   }
 
   onAdd() {
@@ -581,6 +604,7 @@ class HistoryNode extends Component {
           onDelete={this.onDelete}></FileChangesForm>
         {commitForm}
         <BranchForm onClick={this.onBranch} isHidden={!this.props.isBranchable || this.props.nodeState === NodeStateEnum.Created}></BranchForm>
+        <MergeForm onClick={this.onMerge} isHidden={!this.props.isMergable || this.props.nodeState === NodeStateEnum.Created || this.props.nodeState === NodeStateEnum.MakingChanges}></MergeForm>
         <CheckoutForm 
           onClick={this.onCheckout}
           isHidden={this.props.nodeState !== NodeStateEnum.OpenToChanges}></CheckoutForm>
@@ -638,6 +662,10 @@ class CommitForm extends ButtonForm {
 
 class CheckoutForm extends ButtonForm {
   buttonName = 'Checkout';
+}
+
+class MergeForm extends ButtonForm {
+  buttonName = 'Merge';
 }
 
 class StageForm extends ButtonForm {
