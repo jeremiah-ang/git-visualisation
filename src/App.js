@@ -23,6 +23,7 @@ const theme = {
   darkYellow: '#C79544',
   darkBlue: '#2F6594',
   darkGreen: '#136632',
+  grey: '#EEE',
 
   historyHeight: 50,
   historyMarginBottom: 15,
@@ -137,8 +138,8 @@ const HistoryCircle = styled.div`
   height: 20px;
   border-radius: 50%;
   margin-top: ${props => props.theme.historyCircleMarginTop + 'px'};
-  background-color: ${props => CIRCLE_COLORS[props.columnNth % CIRCLE_COLORS.length]};
-  border: ${props => props.isCheckout ? CIRCLE_BORDERS[props.columnNth % CIRCLE_COLORS.length] + ' solid 3px' : ''};
+  background-color: ${props => (props.isCheckout) ? props.theme.grey : props.theme.circleColors[props.columnNth % CIRCLE_COLORS.length]};
+  border: ${props => props.isCheckout ? props.theme.circleColors[props.columnNth % CIRCLE_COLORS.length] + ' solid 3px' : ''};
   margin-left: ${props => props.isCheckout ? '' : props.theme.historyCircleBorderLeft + 'px'};
   animation: ${fallDownAnimation} cubic-bezier(0.770, 0.000, 0.175, 1.000) 1s;
   animation-fill-mode: forwards;
@@ -204,23 +205,57 @@ class Point {
   }
 }
 
+const NodeStateEnum = {
+  Created: 1,
+  OpenToChanges: 2,
+  MakingChanges: 3,
+  MadeChanges: 4,
+}
+
 class Node {
-  constructor(nodeId, parentNodeIds, columnId, pos, rowOffset, isCommited=false, isLeaf=true) {
+  constructor(nodeId, parentNodeIds, columnId, pos, rowOffset=0, state=NodeStateEnum.Created) {
     this.nodeId = nodeId;
     this.parentNodeIds = parentNodeIds;
     this.columnId = columnId; 
     this.pos = pos;
     this.rowOffset = rowOffset;
-    this.isCommited = isCommited;
-    this.isLeaf = isLeaf;
+    this.state = state;
   }
 
   commit() {
-    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, true, true);
+    if (this.state !== NodeStateEnum.Created) {
+      console.log(`[${this.nodeId}] Cannot Commit! State error: ${this.state}`);
+      return this;
+    }
+    console.log(`[${this.nodeId}] commit, new state = ${NodeStateEnum.OpenToChanges}`);
+    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.OpenToChanges);
   }
 
-  setIsLeaf(isLeaf) {
-    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, this.isCommited, isLeaf);
+  checkout() {
+    if (this.state !== NodeStateEnum.OpenToChanges) {
+      console.log(`[${this.nodeId}] Cannot checkout! State error: ${this.state}`);
+      return this;
+    }
+    console.log(`[${this.nodeId}] checkout, new state = ${NodeStateEnum.MakingChanges}`);
+    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.MakingChanges);
+  }
+
+  othersCheckout() {
+    if (this.state !== NodeStateEnum.MakingChanges) {
+      console.log(`[${this.nodeId}] Cannot others checkout! State error: ${this.state}`);
+      return this;
+    }
+    console.log(`[${this.nodeId}] Others checkedout, new state = ${NodeStateEnum.OpenToChanges}`);
+    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.OpenToChanges);
+  }
+
+  childCommit() {
+    if (this.state !== NodeStateEnum.MakingChanges) {
+      console.log(`[${this.nodeId}] Cannot make changes! State error: ${this.state}`);
+      return this;
+    }
+    console.log(`[${this.nodeId}] Child Commit, new state = ${NodeStateEnum.MadeChanges}`);
+    return new Node(this.nodeId, this.parentNodeIds, this.columnId, this.pos, this.rowOffset, NodeStateEnum.MadeChanges);
   }
 }
 
@@ -244,6 +279,12 @@ class Column {
   addNode(nodeId) {
     return new Column(this.columnId, [...this.nodeIds, nodeId], this.rowOffset, this.pos);
   }
+
+  pop() {
+    const newNodeIds = [...this.nodeIds];
+    newNodeIds.pop();
+    return new Column(this.columnId, newNodeIds, this.rowOffset, this.pos);
+  }
 }
 
 class GitVisualisation extends Component {
@@ -258,27 +299,38 @@ class GitVisualisation extends Component {
     super(props);
 
     const columnId = shortid.generate();
-    const nodeId = shortid.generate();
-    const column = new Column(columnId, [nodeId], 0, 0);
-    const node = new Node(nodeId, [], columnId, 0, 0, true);
+    const rootNodeId = shortid.generate();
+    const checkoutNodeId = shortid.generate();
+
+    const column = new Column(columnId, [rootNodeId, checkoutNodeId], 0, 0);
+    const rootNode = new Node(rootNodeId, {}, columnId, 0).commit().checkout();
+    const checkoutNode = new Node(checkoutNodeId, {[columnId]: rootNodeId}, columnId, 1);
+
     this.state.columnIds.push(columnId);
     this.state[columnId] = column;
-    this.state.nodeIds.push(nodeId);
-    this.state[nodeId] = node;
-    this.state.checkout = nodeId;
+    this.state.nodeIds.push(rootNodeId);
+    this.state[rootNodeId] = rootNode;
+    this.state.nodeIds.push(checkoutNodeId);
+    this.state[checkoutNodeId] = checkoutNode;
+    this.state.checkout = checkoutNodeId;
   }
-
+  
   commitNode(parentNodeId, columnId) {
-    const nodeId = shortid.generate();
-    const parentPos = this.state[parentNodeId].pos;
-    const node = new Node(nodeId, [parentNodeId], columnId, parentPos + 1, 0);
-    this.setState((state, _) => ({
-      [parentNodeId]: state[parentNodeId].commit(),
-      [nodeId]: node,
-      [columnId]: state[columnId].addNode(nodeId),
-      nodeIds: [...state.nodeIds, nodeId],
-      checkout: nodeId,
-    }));
+    this.setState((state, _) => { 
+      const nodeId = shortid.generate();
+      const parentPos = this.state[parentNodeId].pos;
+      const grandParentNodeId = this.state[parentNodeId].parentNodeIds[columnId];
+      const node = new Node(nodeId, {[columnId]: parentNodeId}, columnId, parentPos + 1);
+
+      return this.updateCheckout(state, {
+        [grandParentNodeId]: state[grandParentNodeId].childCommit(),
+        [parentNodeId]: state[parentNodeId].commit().checkout(),
+        [nodeId]: node,
+        [columnId]: state[columnId].addNode(nodeId),
+        nodeIds: [...state.nodeIds, nodeId],
+        checkout: nodeId,
+      });
+    });
   }
   branchNode(parentNodeId) {
     const parentPos = this.state[parentNodeId].pos;
@@ -288,19 +340,48 @@ class GitVisualisation extends Component {
     const nodeId = shortid.generate();
 
     const column = new Column(columnId, [branchNodeId, nodeId], parentPos + 1, this.state.columnIds.length,);
-    
-    const branchNode = new Node(branchNodeId, [parentNodeId], columnId, parentPos + 1, 0, true, false);
-    const node = new Node(nodeId, [branchNodeId], columnId, parentPos + 2, 0);
+    const branchNode = new Node(branchNodeId, {[columnId]: parentNodeId}, columnId, parentPos + 1).commit().checkout();
+    const node = new Node(nodeId, {[columnId]: branchNodeId}, columnId, parentPos + 2);
 
-    this.setState((state, _) => ({
+    this.setState((state, _) => this.updateCheckout(state, {
       [columnId]: column,
       [branchNodeId]: branchNode,
       [nodeId]: node,
       columnIds: [...state.columnIds, columnId],
       nodeIds: [...state.nodeIds, branchNodeId, nodeId],
       checkout: nodeId,
+      [state.checkout]: state[state.checkout].othersCheckout(),
     }));
   }
+  setCheckout(parentNodeId) {
+    this.setState((state, _) => {
+      const newNodeId = shortid.generate();
+      const parentNode = state[parentNodeId];
+      const column = state[parentNode.columnId].addNode(newNodeId);
+      const newNode = new Node(newNodeId, {[column.columnId]: parentNodeId}, column.columnId, parentNode.pos + 1);
+
+      return this.updateCheckout(state, {
+        checkout: newNodeId,
+        nodeIds: [...state.nodeIds, newNodeId],
+        [newNodeId]: newNode,
+        [column.columnId]: column.addNode(newNodeId),
+        [parentNodeId]: parentNode.checkout(),
+      })
+    });
+  }
+  updateCheckout(state, updateDict) {    
+    const currentCheckoutNode = state[state.checkout];
+    const currentCheckoutNodeParent = state[currentCheckoutNode.parentNodeIds[currentCheckoutNode.columnId]];
+    const currentCheckoutNodeColumn = state[currentCheckoutNode.columnId];
+
+    if (!(state.checkout in updateDict) || updateDict[state.checkout].state === NodeStateEnum.Created) {
+      updateDict[currentCheckoutNodeParent.nodeId] = currentCheckoutNodeParent.othersCheckout();
+      updateDict[currentCheckoutNode.nodeId] = undefined;
+    }
+    updateDict[currentCheckoutNodeColumn.columnId] = currentCheckoutNodeColumn.pop();
+
+    return updateDict;
+  } 
   mergeNode(mergeFromNodeId, mergeToNodeId) {
     const parentNodeIds = [mergeFromNodeId, mergeToNodeId]
     const nodeId = shortid.generate();
@@ -320,17 +401,6 @@ class GitVisualisation extends Component {
   addNodeCircleDom(nodeId, dom, row, column) {
     this.circles[nodeId] = new Circle(nodeId, dom, row, column);
   }
-  setCheckout(nodeId) {
-    this.setState((state, _) => {
-      const checkoutNode = state[state.checkout];
-      checkoutNode.setIsLeaf(true);
-      const newCheckoutNode = state[nodeId];
-      newCheckoutNode.setIsLeaf(false);
-      return {
-        checkout: nodeId,
-      }
-    });
-  }
   connectionsContainerRef(dom) {
     this.connectionsContainer = dom;
   }
@@ -338,7 +408,8 @@ class GitVisualisation extends Component {
     const circlePairs = [];
     Object.keys(this.circles).forEach(nodeId => {
       const node = this.state[nodeId];
-      node.parentNodeIds.forEach(parentNodeId => 
+      if (!node) return;
+      Object.values(node.parentNodeIds).forEach(parentNodeId => 
         circlePairs.push([this.circles[parentNodeId], this.circles[nodeId]])
       );
     });
@@ -351,6 +422,7 @@ class GitVisualisation extends Component {
     const state = this.state;
     const copyColumnHistoryNodes = {};
     state.nodeIds.forEach(nodeId => {
+      if (!state[nodeId]) return;
       const columnId = state[nodeId].columnId;
       const column = this.state[columnId];
       const node = this.state[nodeId];
@@ -363,9 +435,8 @@ class GitVisualisation extends Component {
         historyCircleRef={function (dom) { $this.addNodeCircleDom(nodeId, dom, node.pos, column.pos); }}
 
         isCheckout={state.checkout === nodeId}
-        isCommited={state[nodeId].isCommited}
         isBranchable={true}
-        isLeaf={state[nodeId].isLeaf}
+        nodeState={node.state}
 
         columnNth={column.pos}
         rowOffset={node.rowOffset}
@@ -486,7 +557,7 @@ class HistoryNode extends Component {
   }
 
   render() {
-    const isClosedForChanges = this.props.isCommited || !this.props.isCheckout
+    const isClosedForChanges = this.props.nodeState !== NodeStateEnum.Created;
     const commitForm = (!isClosedForChanges && (this.state.adds + this.state.deletes)) ?
       <CommitForm onClick={this.onCommit}></CommitForm> :
       <div></div>
@@ -496,7 +567,7 @@ class HistoryNode extends Component {
         <HistoryCircle 
           ref={this.props.historyCircleRef} 
           columnNth={this.props.columnNth} 
-          isCheckout={this.props.isCheckout}
+          isCheckout={this.props.nodeState === NodeStateEnum.Created}
         >
         </HistoryCircle>
       </HistoryColumn>
@@ -509,10 +580,10 @@ class HistoryNode extends Component {
           onAdd={this.onAdd}
           onDelete={this.onDelete}></FileChangesForm>
         {commitForm}
-        <BranchForm onClick={this.onBranch} isHidden={!this.props.isBranchable || !this.props.isCommited}></BranchForm>
+        <BranchForm onClick={this.onBranch} isHidden={!this.props.isBranchable || this.props.nodeState === NodeStateEnum.Created}></BranchForm>
         <CheckoutForm 
           onClick={this.onCheckout}
-          isHidden={!this.props.isLeaf}></CheckoutForm>
+          isHidden={this.props.nodeState !== NodeStateEnum.OpenToChanges}></CheckoutForm>
       </HistoryControl>
     </History>;
   }
